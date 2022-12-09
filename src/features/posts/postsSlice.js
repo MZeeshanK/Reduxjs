@@ -1,14 +1,23 @@
-import { createSlice, nanoid, createAsyncThunk } from '@reduxjs/toolkit';
+import {
+  createSlice,
+  createAsyncThunk,
+  createSelector,
+  createEntityAdapter,
+} from '@reduxjs/toolkit';
 import axios from 'axios';
 import sub from 'date-fns/sub';
 
 const POSTS_URL = 'https://jsonplaceholder.typicode.com/posts';
 
-const initialState = {
-  posts: [],
+const postsAdapter = createEntityAdapter({
+  sortComparer: (a, b) => b.date.localeCompare(a.date),
+});
+
+const initialState = postsAdapter.getInitialState({
   status: 'idle', // 'idle' | 'loading' | 'succeeded' | 'failed'
   error: null,
-};
+  count: 0,
+});
 
 export const fetchPosts = createAsyncThunk('posts/fetchPosts', async () => {
   const response = await axios.get(POSTS_URL);
@@ -23,37 +32,39 @@ export const addNewPost = createAsyncThunk(
   }
 );
 
+export const updatePost = createAsyncThunk(
+  'posts/updatePost',
+  async (initialPost) => {
+    const { id } = initialPost;
+    const response = await axios.put(`${POSTS_URL}/${id}`, initialPost);
+    return response.data;
+  }
+);
+
+export const deletePost = createAsyncThunk(
+  'posts/deletePost',
+  async (initialPost) => {
+    const { id } = initialPost;
+
+    const response = await axios.delete(`${POSTS_URL}/${id}`);
+    if (response?.status === 200) {
+      return initialPost;
+    }
+    return `${response?.status}: ${response?.statusText}`;
+  }
+);
+
 const postSlice = createSlice({
   name: 'posts',
   initialState,
   reducers: {
-    postAdded: {
-      reducer(state, action) {
-        state.posts.push(action.payload);
-      },
-      prepare(title, content, userId) {
-        return {
-          payload: {
-            id: nanoid(),
-            title,
-            content,
-            date: new Date().toISOString(),
-            userId,
-            reactions: {
-              thumbsUp: 0,
-              hooray: 0,
-              heart: 0,
-              rocket: 0,
-              eyes: 0,
-            },
-          },
-        };
-      },
-    },
     reactionAdded(state, action) {
       const { postId, reaction } = action.payload;
-      const existingPost = state.posts.find((post) => post.id === postId);
+      const existingPost = state.entities[postId];
       existingPost && existingPost.reactions[reaction]++;
+    },
+    increaseCount(state, action) {
+      state.count += 1;
     },
   },
   extraReducers(builder) {
@@ -76,7 +87,7 @@ const postSlice = createSlice({
           return post;
         });
         // add any fetched posts to the array
-        state.posts = loadedPosts;
+        postsAdapter.upsertMany(state, loadedPosts);
       })
       .addCase(fetchPosts.rejected, (state, action) => {
         state.status = 'failed';
@@ -92,15 +103,49 @@ const postSlice = createSlice({
           rocket: 0,
           eyes: 0,
         };
-        state.posts.push(action.payload);
+        postsAdapter.addOne(state, action.payload);
+      })
+      .addCase(updatePost.fulfilled, (state, action) => {
+        if (!action.payload?.id) {
+          console.log('Update could not complete');
+          console.log(action.payload);
+          return;
+        }
+
+        action.payload.date = new Date().toISOString();
+        postsAdapter.upsertOne(state, action.payload);
+      })
+      .addCase(deletePost.fulfilled, (state, action) => {
+        if (!action.payload?.id) {
+          console.log('Could not delete Post');
+          console.log(action.payload);
+          return;
+        }
+
+        const { id } = action.payload;
+        postsAdapter.removeOne(state, id);
       });
   },
 });
 
-export const selectAllPosts = (state) => state.posts.posts;
+// getSelectors creates these selectors and we rename them
+export const {
+  selectAll: selectAllPosts,
+  selectById: selectPostById,
+  selectIds: selectPostIds,
+} = postsAdapter.getSelectors((state) => state.posts);
+
+// Selectors
 export const getPostsStatus = (state) => state.posts.status;
 export const getPostsError = (state) => state.posts.error;
+export const getCount = (state) => state.posts.count;
 
-export const { postAdded, reactionAdded } = postSlice.actions;
+// memoized selector -- only runs when userId changes
+export const selectPostByUser = createSelector(
+  [selectAllPosts, (state, userId) => userId],
+  (posts, userId) => posts.filter((post) => post.userId === userId)
+);
+
+export const { increaseCount, reactionAdded } = postSlice.actions;
 
 export default postSlice.reducer;
